@@ -1,0 +1,10 @@
+# ---- OS Dev
+.vscode
+.DS_Store
+
+# ---- Python
+__pycache__/
+
+# ---- Application
+cache
+test
