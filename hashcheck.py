@@ -4,7 +4,7 @@
 # Title    : File Integrity Monitor
 # Authors  : Jadon Duff
 # Created  : 2026-10-23
-# Updated  : 2026-10-23
+# Updated  : 2026-10-25
 # Class    : CYB3801 Intro to Cybersecurity
 # Project  : Final
 # Hardware : Verified Apple M5 Pro (64GB Memory)
@@ -20,62 +20,153 @@
 # ----------------------------------------------------------------------
 
 # ---- Imports ---------------------------------------------------------
+from zipfile import ZipFile, ZIP_DEFLATED
 from pathlib import Path
 import hashlib
-import pickle
+import json
 import sys
+import io
 import os
+
+
+# ---- Helpers ---------------------------------------------------------
+def handle_paths(path: str) -> tuple[Path, Path, dict]:
+    """Converts a path string into three directory paths.
+
+    Ingests the provided path parameter and returns a triplet (3-tuple)
+    representing the user-provided directory, a path to the `.json` of cached hashes,
+    and a dictionary containing the cached hashes.
+
+    Args:
+        path (str): The path to handle.
+
+    Returns:
+        tuple[Path, Path, dict]: A triplet of the user-provided Path, hashes Path, and hashes dictionary.
+    """
+    path = Path(path).resolve()
+
+    self_dir = Path(__file__).resolve().parent
+    sub_dir = self_dir / "cache"
+    hash_path = sub_dir / "hashes.json"
+
+    sub_dir.mkdir(parents=True, exist_ok=True)
+
+    if not hash_path.is_file():
+        with open(hash_path, "w", encoding="utf-8") as file:
+            json.dump(dict(), file, indent=4)
+
+    with open(hash_path, "r") as file:
+        hashes_dict = json.load(file)
+
+    return path, hash_path, hashes_dict
+
+
+def check_file(target_path: Path, hash_path: Path, cache: dict) -> None:
+    """Handles hashes for a single file.
+
+    Takes a target file path, hashes cache path and a cache. Handles hash checking logic
+    for a single file using `json` and the `sha256` hashing algorithm.
+
+    Args:
+        target_path (Path): The path to the desired file to check.
+        hash_path (Path): The path to the hash cache.
+        cache (dict): A dictionary of previous file/directory hashes.
+    
+    Returns:
+        None.
+    """
+    print(target_path)
+    with open(target_path, "rb") as file:
+        filehash = hashlib.file_digest(file, "sha256")
+    print(f"File Hash is: {filehash.hexdigest()}")
+
+    # New file path provided
+    if str(target_path) not in cache:
+        print("File has not been checked before; adding to cache.")
+        cache[str(target_path)] = filehash.hexdigest()
+
+    # File already exists in cache
+    else:
+        old_hash = cache[str(target_path)]
+        if old_hash == filehash.hexdigest():
+            print("File has NOT changed.")
+        else:
+            print(f"File has changed! Previous hash was: {old_hash}")
+            cache[str(target_path)] = filehash.hexdigest()
+            print("The contents or metadata of the file has been verified to have changed from its past scan. Proceed with caution.")
+
+    print("Running the hashcheck tool did not run or execute files and only verified the integrity of the specified file or directory.")
+
+    # Save file
+    with open(hash_path, "w", encoding="utf-8") as file:
+        json.dump(cache, file, indent=4)
+
+
+
+def check_dir(target_path: Path, hash_path: Path, cache: dict) -> None:
+    """Handles hashes for a directory.
+
+    Takes a target directory path, hashes cache path and a cache. Handles hash checking logic
+    for a directory using `json`, `zip`, and the `sha256` hashing algorithm.
+
+    Args:
+        target_path (Path): The path to the desired directory to check.
+        hash_path (Path): The path to the hash cache.
+        cache (dict): A dictionary of previous file/directory hashes.
+    
+    Returns:
+        None.
+    """
+    buffer = io.BytesIO()
+    hasher = hashlib.new("sha256")
+
+    with ZipFile(buffer, "w", ZIP_DEFLATED) as zip_file:
+        for file in sorted(target_path.rglob("*")):
+            if file.is_file():
+                zip_file.write(file, arcname=file.relative_to(target_path))
+
+    buffer.seek(0)
+    chunk = buffer.read(8192)
+    while chunk:
+        hasher.update(chunk)
+        chunk = buffer.read(8192)
+
+    dirhash = hasher.hexdigest()
+    print(f"Directory Hash is: {dirhash}")
+
+    # New dir path provided
+    if str(target_path) not in cache:
+        print("Directory has not been checked before; adding to cache.")
+        cache[str(target_path)] = dirhash
+
+    # Dir already exists in cache
+    else:
+        old_hash = cache[str(target_path)]
+        if old_hash == dirhash:
+            print("Directory has NOT changed.")
+        else:
+            print(f"Directory has changed! Previous hash was: {old_hash}")
+            cache[str(target_path)] = dirhash
+            print("The contents or metadata of the directory has been verified to have changed from its past scan. Proceed with caution.")
+
+    print("Running the hashcheck tool did not run or execute files and only verified the integrity of the specified file or directory.")
+
+    # Save file
+    with open(hash_path, "w", encoding="utf-8") as file:
+        json.dump(cache, file, indent=4)
 
 
 # ---- Main ------------------------------------------------------------
 if __name__ == "__main__":
     if len(sys.argv) == 2:
-        path = Path(sys.argv[1]).resolve()
+        TARGET_PATH, HASH_PATH, CACHE = handle_paths(sys.argv[1])
 
-        # Get Pickle of Hashes
-        self_dir = Path(__file__).resolve().parent
-        sub_dir = self_dir / "cache"
-        pickle_path = sub_dir / "hashes.pkl"
-
-        sub_dir.mkdir(parents=True, exist_ok=True)
-        if not pickle_path.is_file():
-            with open(pickle_path, "wb") as dump:
-                print("You have never run hashcheck before. Setting up...")
-                pickle.dump(dict(), dump)
-
-        # Load Pickle
-        with open(pickle_path, 'rb') as file:
-            cached_hashes = pickle.load(file)
-
-        # Handle file hash
-        if path.is_file():
-            with open(path, "rb") as file:
-                filehash = hashlib.file_digest(file, "sha256")
-            print(f"File Hash is: {filehash.hexdigest()}")
-
-            if path not in cached_hashes:
-                print("File has not been checked before; adding to cache.")
-                cached_hashes[path] = filehash.hexdigest()
-            else:
-                old_hash = cached_hashes[path]
-                if old_hash == filehash.hexdigest():
-                    print("File has NOT changed.")
-                else:
-                    print(f"File has changed! Previous hash was: {old_hash}")
-                    cached_hashes[path] = filehash.hexdigest()
-                    print("The contents or metadata of the file has been verified to have changed from its past scan. Proceed with caution.")
-
-            print("Running the hashcheck tool did not run or execute files and only verified the integrity of the specified file or directory.")
-
-            # Save pickle
-            with open(pickle_path, "wb") as dump:
-                pickle.dump(cached_hashes, dump)
-                print(f"Hashcheck has saved your data to {pickle_path}")
-
-        # Check for invalid path
+        if TARGET_PATH.is_file():
+            check_file(TARGET_PATH, HASH_PATH, CACHE)
+        elif TARGET_PATH.is_dir():
+            check_dir(TARGET_PATH, HASH_PATH, CACHE)
         else:
-            print(f"Illegal Argument: You passed {path} while only valid files or directories are accepted.\nUsage:\n\tpython3 hashcheck.py <file/directory>")
-
+            print(f"Illegal Argument: You passed {TARGET_PATH} while only valid files or directories are accepted.\nUsage:\n\tpython3 hashcheck.py <file/directory>")
         
     else:
         print(f"Illegal Argument(s): You passed {len(sys.argv)-1} arguments while only 1 is accepted.\nUsage:\n\tpython3 hashcheck.py <file/directory>")
