@@ -2,13 +2,14 @@
 # python hashcheck.py <file/directory>
 # ----------------------------------------------------------------------
 # Title    : File Integrity Monitor
-# Authors  : Jadon Duff
+# Authors  : Jadon Duff, Jacob Ewasko
 # Created  : 2026-10-23
-# Updated  : 2026-10-25
+# Updated  : 2026-10-30
 # Class    : CYB3801 Intro to Cybersecurity
 # Project  : Final
-# Hardware : Verified Apple M5 Pro (64GB Memory)
-# Software : Verified Python 3.14.3
+# Hardware : Verified Apple M5 Pro (64GB Memory), 
+#            Verified AMD Ryzen 9 7940HX with Radeon Graphics (48 GB Memory)
+# Software : Verified Python 3.14.3; Verified Python 3.13.13
 # Runtime  : 0.02s
 # ----------------------------------------------------------------------
 # Description:
@@ -20,7 +21,12 @@
 # ----------------------------------------------------------------------
 
 # ---- Imports ---------------------------------------------------------
-from zipfile import ZipFile, ZIP_DEFLATED
+# from zipfile import ZipFile, ZIP_DEFLATED
+# 7-Zip imports
+from py7zr import SevenZipFile
+from py7zr.helpers import calculate_crc32
+
+
 from pathlib import Path
 import hashlib
 import json
@@ -48,6 +54,7 @@ def handle_paths(path: str) -> tuple[Path, Path, dict]:
     self_dir = Path(__file__).resolve().parent
     sub_dir = self_dir / "cache"
     hash_path = sub_dir / "hashes.json"
+    # crc_path = sub_dir / "crc.json"
 
     sub_dir.mkdir(parents=True, exist_ok=True)
 
@@ -120,10 +127,46 @@ def check_dir(target_path: Path, hash_path: Path, cache: dict) -> None:
     buffer = io.BytesIO()
     hasher = hashlib.new("sha256")
 
-    with ZipFile(buffer, "w", ZIP_DEFLATED) as zip_file:
+    with SevenZipFile(buffer, "w",) as zip_file:
         for file in sorted(target_path.rglob("*")):
             if file.is_file():
+                print("Compressing", file)
                 zip_file.write(file, arcname=file.relative_to(target_path))
+
+
+    buffer.seek(0)
+
+    crcdict = dict()
+    test = str(hash_path)
+    crc_path = Path(test[:-11] + '/crc.json') # get crc path from hashes.json
+
+    if not crc_path.is_file():
+        with open(crc_path, "w", encoding="utf-8") as file:
+            json.dump(dict(), file, indent=4)
+
+    with open(crc_path, "r") as file:
+        crcdict = json.load(file)
+
+    # dummy test
+    # crcdict['hello.zip'] = 1
+
+    with SevenZipFile(buffer, "r") as zip_file:
+        for member in zip_file.list():
+            # Using .crc32 and handling cases where a directory might have a None CRC
+            crc_value = hex(member.crc32) if member.crc32 is not None else "N/A"
+            print(f"File: {member.filename} | CRC32: {crc_value}")
+
+            # check if the crc values have changed
+            if member.filename in crcdict:
+                if (crc_value != crcdict[member.filename]):
+                    print(f"CRC mismatch for {member.filename}")
+
+            # update crc values
+            crcdict[member.filename] = crc_value
+            # if member.crc != calculate_crc32(member.data):
+            #     print(f"CRC mismatch for {member.filename}")
+
+
 
     buffer.seek(0)
     chunk = buffer.read(8192)
@@ -154,6 +197,9 @@ def check_dir(target_path: Path, hash_path: Path, cache: dict) -> None:
     # Save file
     with open(hash_path, "w", encoding="utf-8") as file:
         json.dump(cache, file, indent=4)
+
+    with open(crc_path, "w", encoding="utf-8") as file:
+        json.dump(crcdict, file, indent=4)
 
 
 # ---- Main ------------------------------------------------------------
