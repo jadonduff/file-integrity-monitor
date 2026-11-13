@@ -52,6 +52,7 @@ from py7zr.helpers import calculate_crc32
 
 from pathlib import Path
 import hashlib
+import difflib
 import json
 import shutil
 import subprocess
@@ -109,32 +110,55 @@ def check_file(target_path: Path, hash_path: Path, cache: dict) -> None:
     """
     print(target_path)
     with open(target_path, "rb") as file:
+
         filehash = hashlib.file_digest(file, "sha256")
+    # get file content as a string
+    # with open(target_path, "rb") as file:
+    #     filecontent = file.read().decode("utf-8")
+
     print(f"File Hash is: {filehash.hexdigest()}")
 
     # find previous crc if available
     crcdict = dict()
+    contentdict = dict()
     test = str(hash_path)
     crc_path = Path(test[:-11] + '/crc.json') # get crc path from hashes.json
+    content_path = Path(test[:-11] + '/content.json') # get content path from hashes.json
 
-    if not crc_path.is_file():
+    # if cache of crc or content does not exist, make a new one
+    if not crc_path.is_file() or not content_path.is_file():
+        # construct this crc cache
         with open(crc_path, "w", encoding="utf-8") as file:
             json.dump(dict(), file, indent=4)
+        # construct this content cache
+        with open(content_path, "w", encoding="utf-8") as file:
+            json.dump(dict(), file, indent=4)
 
+    # load crc dict and content dict into a local variable
     with open(crc_path, "r") as file:
         crcdict = json.load(file)
+    with open(content_path, "r") as file:
+        contentdict = json.load(file)
 
     # find new crc and compare with previous to see if changed
     buffer = io.BytesIO()
     with SevenZipFile(buffer, "w",) as zip_file:
         if target_path.is_file():
             print("Compressing", target_path)
+            # print(target_path.name)
+            # print(target_path.read_text(encoding="utf-8"))
             zip_file.write(target_path, arcname=target_path.name)
+
+            try:
+                filecontent = target_path.read_text(encoding="utf-8")
+            # if not readable format like zip
+            except:
+                filecontent = str(target_path.read_bytes())
 
     buffer.seek(0)
     with SevenZipFile(buffer, "r") as zip_file:
         for member in zip_file.list():
-            print(member)
+
             # Using .crc32 and handling cases where a directory might have a None CRC
             crc_value = hex(member.crc32) if member.crc32 is not None else "N/A"
             print(f"File: {member.filename} | CRC32: {crc_value}")
@@ -151,14 +175,27 @@ def check_file(target_path: Path, hash_path: Path, cache: dict) -> None:
     if str(target_path) not in cache:
         print("File has not been checked before; adding to cache.")
         cache[str(target_path)] = filehash.hexdigest()
+        contentdict[str(target_path)] = filecontent
 
     # File already exists in cache
     else:
+        # load old content
+        old_content = contentdict[str(target_path)]
         old_hash = cache[str(target_path)]
         if old_hash == filehash.hexdigest():
             print("File has NOT changed.")
         else:
             print(f"File has changed! Previous hash was: {old_hash}")
+            # show diff
+            diff = difflib.unified_diff(
+                old_content.splitlines(keepends=True),
+                filecontent.splitlines(keepends=True)
+            )
+            print("Difference since last update:")
+            print(''.join(diff))
+
+            # save this info as the newest file
+            contentdict[str(target_path)] = filecontent
             cache[str(target_path)] = filehash.hexdigest()
             print("The contents or metadata of the file has been verified to have changed from its past scan. Proceed with caution.")
 
@@ -170,6 +207,9 @@ def check_file(target_path: Path, hash_path: Path, cache: dict) -> None:
 
     with open(crc_path, "w", encoding="utf-8") as file:
         json.dump(crcdict, file, indent=4)
+
+    with open(content_path, "w", encoding="utf-8") as file:
+            json.dump(contentdict, file, indent=4)
 
 
 
@@ -190,28 +230,45 @@ def check_dir(target_path: Path, hash_path: Path, cache: dict) -> None:
     buffer = io.BytesIO()
     hasher = hashlib.new("sha256")
 
+    locfilecontent = dict()
+
     with SevenZipFile(buffer, "w",) as zip_file:
         for file in sorted(target_path.rglob("*")):
             if file.is_file():
                 print("Compressing", file)
-                zip_file.write(file, arcname=file.relative_to(target_path))
+                filename = file.relative_to(target_path)
+                zip_file.write(file, arcname=filename)
 
+                # get file content
+                # if any readable format
+                try:
+                    locfilecontent[str(filename)] = file.read_text(encoding="utf-8")
+                # if not readable format like zip
+                except:
+                    locfilecontent[str(filename)] = str(file.read_bytes())
+                
 
     buffer.seek(0)
 
     crcdict = dict()
     test = str(hash_path)
     crc_path = Path(test[:-11] + '/crc.json') # get crc path from hashes.json
+    content_path = Path(test[:-11] + '/content.json') # get content path from hashes.json
 
-    if not crc_path.is_file():
+    # if cache of crc or content does not exist, make a new one
+    if not crc_path.is_file() or not content_path.is_file():
+        # construct this crc cache
         with open(crc_path, "w", encoding="utf-8") as file:
             json.dump(dict(), file, indent=4)
+        # construct this content cache
+        with open(content_path, "w", encoding="utf-8") as file:
+            json.dump(dict(), file, indent=4)
 
+    # load crc dict and content dict into a local variable
     with open(crc_path, "r") as file:
         crcdict = json.load(file)
-
-    # dummy test
-    # crcdict['hello.zip'] = 1
+    with open(content_path, "r") as file:
+        contentdict = json.load(file)
 
     with SevenZipFile(buffer, "r") as zip_file:
         for member in zip_file.list():
@@ -224,10 +281,25 @@ def check_dir(target_path: Path, hash_path: Path, cache: dict) -> None:
                 if (crc_value != crcdict[member.filename]):
                     print(f"CRC mismatch for {member.filename}")
 
+            if (member.filename in contentdict):
+                filecontent = locfilecontent[member.filename]
+                old_content = contentdict[member.filename]
+                if (filecontent != old_content):
+                    print(f"File content has changed!")
+                    print("Difference since last update:")
+                    # show diff
+                    diff = difflib.unified_diff(
+                        old_content.splitlines(keepends=True),
+                        filecontent.splitlines(keepends=True)
+                    )
+                    print(''.join(diff))
+                    print()
+
             # update crc values
             crcdict[member.filename] = crc_value
-            # if member.crc != calculate_crc32(member.data):
-            #     print(f"CRC mismatch for {member.filename}")
+            # update content values
+            contentdict[member.filename] = locfilecontent[member.filename]
+
 
 
 
@@ -264,6 +336,8 @@ def check_dir(target_path: Path, hash_path: Path, cache: dict) -> None:
     with open(crc_path, "w", encoding="utf-8") as file:
         json.dump(crcdict, file, indent=4)
 
+    with open(content_path, "w", encoding="utf-8") as file:
+            json.dump(contentdict, file, indent=4)
 
 # ---- Multi-hash and binwalk analysis (new) ---------------------------
 MULTI_ALGORITHMS = ("md5", "sha256", "sha512", "blake2b", "blake2s")
